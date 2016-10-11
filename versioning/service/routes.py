@@ -1,5 +1,6 @@
-from .views import VersionView
+from .views import DeploymentView, ArtifactView
 
 
 def setup_routes(app):
-    VersionView.setup_routes(app)
+    DeploymentView.setup_routes(app)
+    ArtifactView.setup_routes(app)

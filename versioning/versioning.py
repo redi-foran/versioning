@@ -22,14 +22,17 @@ class DatabaseConnectionMiddlewareFactory(object):
 
 
 async def initialize(loop):
+    # TODO: Pass in connection URL as a command line argument
     db_engine = sa.create_engine("sqlite://")
     application = web.Application(loop=loop, middlewares=[DatabaseConnectionMiddlewareFactory(db_engine)])
+    # TODO: Use encrypted cookie storage
     aiohttp_session.setup(application, aiohttp_session.SimpleCookieStorage())
     aiohttp_security.setup(application, aiohttp_security.SessionIdentityPolicy(), ActiveDirectoryPolicy())
 
     routes.setup_routes(application)
 
     handler = application.make_handler()
+    # TODO: Pass in host and port as command line arguments
     server = await loop.create_server(handler, 'nydevl0008.rdti.com', 8081)
     return server, application, handler
 
