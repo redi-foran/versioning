@@ -18,8 +18,19 @@ from aiohttp_security import authorized_userid
     #image_key=1, image_version='latest', artifact_key=1, artifact_version='LATEST-SNAPSHOT', configuration_key=1, configuration_version='master', username='foran', effective_utc=now))
 
 
-async def _deployment_to_dict(deployment, loop):
-    return {'environment': deployment.environment,
+_DEPLOYMENT_ROUTE_NAME = 'deployment'
+_ARTIFACT_ROUTE_NAME = 'artifact'
+
+
+async def _deployment_to_dict(deployment, app):
+    uri = app.router[_DEPLOYMENT_ROUTE_NAME].url(parts={
+        'environment': deployment.environment,
+        'data_center': deployment.data_center,
+        'application': deployment.application,
+        'stripe': deployment.stripe,
+        'instance': deployment.instance
+        })
+    result = {'environment': deployment.environment,
             'data_center': deployment.data_center,
             'application': deployment.application,
             'stripe': deployment.stripe,
@@ -29,12 +40,38 @@ async def _deployment_to_dict(deployment, loop):
             'artifact_group': deployment.artifact.group,
             'artifact_name': deployment.artifact.name,
             'artifact_version': deployment.artifact_version,
-            'artifact_uri': await deployment.get_artifact_uri(loop),
+            'artifact_download_url': await deployment.get_artifact_download_url(app.loop),
             'git_repository': deployment.configuration.git_repository,
             'configuration_version': deployment.configuration_version,
             'effective_username': deployment.effective_username,
-            'effective_utc': deployment.effective_utc
+            'effective_utc': deployment.effective_utc,
+            'is_active': deployment.is_active
+            'uri': uri
             }
+    if result['is_active']:
+        result['deactivated_username'] = deployment.deactivated_username
+        result['deactivated_utc'] = deployment.deactivated_utc
+    return result
+
+
+async def _artifact_to_dict(artifact, app):
+    uri = app.router[_ARTIFACT_ROUTE_NAME].url(parts={
+        'group': artifact.group,
+        'name': artifact.name,
+        'artifactory_base_uri': artifact.artifactory.base_uri
+        })
+    result = {'group': artifact.group,
+            'name': artifact.name,
+            'artifactory_base_uri': artifact.artifactory.base_uri,
+            'effective_username': artifact.effective_username,
+            'effective_utc': artifact.effective_utc,
+            'is_active': artifact.is_active
+            'uri': uri
+            }
+    if result['is_active']:
+        result['deactivated_username'] = artifact.deactivated_username
+        result['deactivated_utc'] = artifact.deactivated_utc
+    return result
 
 
 class ServiceBase(object):
@@ -49,7 +86,7 @@ class ServiceBase(object):
 class DeploymentView(web.View, ServiceBase):
     @staticmethod
     def setup_routes(app, path_prefix=''):
-        app.router.add_route('*', path_prefix + '/deployments/{environment}/{data_center}/{application}/{stripe}/{instance}', DeploymentView)
+        app.router.add_route('*', path_prefix + '/deployments/{environment}/{data_center}/{application}/{stripe}/{instance}', DeploymentView, name=_DEPLOYMENT_ROUTE_NAME)
 
     @property
     def _key(self):
@@ -79,7 +116,7 @@ class DeploymentView(web.View, ServiceBase):
         try:
             unit_of_work = self.get_unit_of_work()
             deployment = await self._get_deployment(unit_of_work)
-            return web.json_response(await _deployment_to_dict(deployment, self.loop), headers={'Last-Modified': deployment.effective_utc})
+            return web.json_response(await _deployment_to_dict(deployment, self.request.app), headers={'Last-Modified': deployment.effective_utc})
         except NoResultFound:
             return web.json_response(data=self._key, status=404)
 
@@ -106,7 +143,7 @@ class DeploymentView(web.View, ServiceBase):
                 effective_username=username)
         unit_of_work.add(deployment)
         unit_of_work.commit()
-        return web.json_response(await _deployment_to_dict(deployment, self.loop), status=201)
+        return web.json_response(await _deployment_to_dict(deployment, self.request.app), status=201)
 
     async def delete(self):
         unit_of_work = self.get_unit_of_work()
@@ -142,7 +179,7 @@ class DeploymentView(web.View, ServiceBase):
 class ArtifactView(web.View, ServiceBase):
     @staticmethod
     def setup_routes(app, path_prefix=''):
-        app.router.add_route('*', path_prefix + '/artifacts/{group}/{name}', ArtifactView)
+        app.router.add_route('*', path_prefix + '/artifacts/{group}/{name}', ArtifactView, name=_ARTIFACT_ROUTE_NAME)
 
     async def _get_artifact(self, unit_of_work):
         return unit_of_work.query(models.Artifact).filter_by(**self._key).one()
@@ -165,7 +202,7 @@ class ArtifactView(web.View, ServiceBase):
         try:
             unit_of_work = self.get_unit_of_work()
             artifact = await self._get_artifact(unit_of_work)
-            return web.json_response(await _artifact_to_dict(deployment, self.loop), headers={'Last-Modified': deployment.effective_utc})
+            return web.json_response(await _artifact_to_dict(deployment, self.request.app), headers={'Last-Modified': deployment.effective_utc})
         except NoResultFound:
             return web.json_response(data=self._key, status=404)
 
@@ -185,7 +222,7 @@ class ArtifactView(web.View, ServiceBase):
                 effective_utc=utc_timestamp)
         unit_of_work.add(artifact)
         unit_of_work.commit()
-        return web.json_response(await _artifact_to_dict(artifact, self.loop), status=201)
+        return web.json_response(await _artifact_to_dict(artifact, self.request.app), status=201)
 
     async def put(self):
         unit_of_work = self.get_unit_of_work()
@@ -214,3 +251,32 @@ class ArtifactView(web.View, ServiceBase):
             return web.json_response({}, status=204)
         except NoResultFound:
             return web.json_response(self._key, status=404)
+
+
+def _set_if_present(source_key, source, destination, destination_key=None):
+    if destination_key is None:
+        destination_key = source_key
+    if source_key in source:
+        destination[destination_key] = source[source_key]
+
+
+class DeploymentCollectionView(web.View, ServiceBase):
+    @staticmethod
+    def setup_routes(app, path_prefix=''):
+        app.router.add_route('*', path_prefix + '/deployments', DeploymentCollectionView)
+
+    async def get(self):
+        lookup = {}
+        for parameter in ['is_active', 'environment', 'data_center', 'application', 'stripe', 'instance']:
+            _set_if_present(parameter, self.request.rel_url.query, lookup)
+        unit_of_work = self.get_unit_of_work()
+        deployments = []
+        latest_utc = 0
+        for deployment in self._get_deployments(unit_of_work, **lookup):
+            deployments.append(await _deployment_to_dict(deployment, self.loop))
+            if deployment.effective_utc > latest_utc:
+                latest_utc = deployment.effective_utc
+        return web.json_response(deployments, headers={'Last-Modified': latest_utc})
+
+    async def _get_deployments(self, unit_of_work, **parameters):
+        return unit_of_work.query(models.Deployment).filter_by(**parameters)

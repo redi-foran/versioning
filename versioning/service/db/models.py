@@ -82,7 +82,7 @@ class Artifact(Base, Deactivatable):
         clone.name = self.name
         super(self, Artifact).build_clone(clone)
 
-    async def get_uri(self, version, loop):
+    async def get_download_url(self, version, loop):
         result = None
         async with ClientSession(loop=loop) as session:
             package_uri = ''
@@ -160,8 +160,8 @@ class Deployment(Base, Deactivatable):
         clone.configuration_version = self.configuration_version
         super(self, Deployment).build_clone(clone)
 
-    async def get_artifact_uri(self, loop):
-        return await self.artifact.get_uri(self.artifact_version, loop)
+    async def get_artifact_download_url(self, loop):
+        return await self.artifact.get_download_url(self.artifact_version, loop)
 
     def upgrade_to(self, image_version, artifact_version, configuration_version, username, utc_timestamp):
         self.deactivate(username, utc_timestamp)
